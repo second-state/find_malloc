@@ -1,0 +1,15 @@
+[package]
+name = "export_malloc"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+wasmbin = { version = "0.6", features = ["proposals"] }
+anyhow = "1"
+clap = "4"
+structopt = "0.3"
+bytes = "*"
+log = "0.4.17"
+env_logger = "0.10.0"
