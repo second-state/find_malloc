@@ -5,31 +5,33 @@ use structopt::StructOpt;
 use wasmbin::indices::FuncId;
 use wasmbin::instructions::Instruction;
 use wasmbin::io::DecodeError;
-use wasmbin::sections::{self, Section};
+use wasmbin::sections::{self, ExportDesc, Section};
 use wasmbin::types::ValueType;
 use wasmbin::Module;
 
 #[derive(StructOpt)]
 struct DumpOpts {
     filename: String,
+    output_filename: String,
 }
 
-fn find_from_exports(m: &Module) -> Result<bool, DecodeError> {
-    log::debug!("find malloc from exports");
+fn find_from_exports(m: &Module) -> Result<Option<(wasmbin::indices::FuncId, bool)>, DecodeError> {
+    log::info!("find malloc from exports");
     if let Some(blob_exports) = m.find_std_section::<sections::payload::Export>() {
         let exports = blob_exports.try_contents()?;
         for export in exports {
-            match export.name.as_str() {
-                "malloc" | "dlmalloc" => return Ok(true),
+            match (export.name.as_str(), export.desc.clone()) {
+                ("malloc", ExportDesc::Func(func_id)) => return Ok(Some((func_id, true))),
+                ("dlmalloc", ExportDesc::Func(func_id)) => return Ok(Some((func_id, false))),
                 _ => {}
             }
         }
     }
-    Ok(false)
+    Ok(None)
 }
 
 fn find_from_name_section(m: &Module) -> Result<Option<wasmbin::indices::FuncId>, DecodeError> {
-    log::debug!("find malloc from name sections");
+    log::info!("find malloc from name sections");
     let mut malloc_func_index: Option<wasmbin::indices::FuncId> = None;
 
     'find: {
@@ -68,7 +70,7 @@ fn find_by_wasi(
     module_name: &str,
     func_name: &str,
 ) -> Result<Option<FuncId>, DecodeError> {
-    log::debug!("find malloc by {}:{}", module_name, func_name);
+    log::info!("find malloc by {}:{}", module_name, func_name);
     let mut malloc_fn_index: Option<FuncId> = None;
 
     let mut target_wasi_fn_index: Option<FuncId> = None;
@@ -126,11 +128,7 @@ fn find_by_wasi(
                     if find {
                         let func_index = func_id.index;
                         if func_index < import_func_size {
-                            log::debug!(
-                                "found a host function after {}:{}",
-                                module_name,
-                                func_name
-                            );
+                            log::warn!("found a host function after {}:{}", module_name, func_name);
                             return Ok(None);
                         }
                         let wasm_func_index = (func_index - import_func_size) as usize;
@@ -144,12 +142,12 @@ fn find_by_wasi(
                                     return Ok(malloc_fn_index);
                                 }
                                 _ => {
-                                    log::debug!("expect a fn(i32)->i32,but got a {:?}", func_type);
+                                    log::warn!("expect a fn(i32)->i32,but got a {:?}", func_type);
                                     return Ok(None);
                                 }
                             }
                         } else {
-                            log::debug!("can't find FuncType {}", func_index);
+                            log::warn!("can't find FuncType of {:?}", func_id);
                             return Ok(None);
                         }
                     } else {
@@ -166,13 +164,17 @@ fn find_by_wasi(
 }
 
 fn export_malloc(mut m: Module) -> Result<Module, DecodeError> {
-    if find_from_exports(&m)? {
-        return Ok(m);
-    }
-
     let mut malloc_func_index: Option<wasmbin::indices::FuncId>;
 
     'find: {
+        if let Some((index, is_malloc)) = find_from_exports(&m)? {
+            if is_malloc {
+                return Ok(m);
+            } else {
+                malloc_func_index = Some(index);
+                break 'find;
+            }
+        }
         malloc_func_index = find_from_name_section(&m)?;
         if malloc_func_index.is_some() {
             break 'find;
@@ -190,13 +192,15 @@ fn export_malloc(mut m: Module) -> Result<Module, DecodeError> {
     }
 
     if let Some(malloc_func_index) = malloc_func_index {
-        log::debug!("export {:?} as malloc", malloc_func_index);
+        log::info!("export {:?} as malloc", malloc_func_index);
         m.find_or_insert_std_section(|| sections::payload::Export::default())
             .try_contents_mut()?
             .push(sections::Export {
                 name: "malloc".to_string(),
                 desc: sections::ExportDesc::Func(malloc_func_index),
             });
+    } else {
+        log::error!("malloc is not found");
     }
 
     Ok(m)
@@ -215,6 +219,6 @@ fn main() -> anyhow::Result<()> {
     })?;
 
     let m = export_malloc(m).unwrap();
-    m.encode_into(File::create(format!("{}.pass", opts.filename))?)?;
+    m.encode_into(File::create(opts.output_filename)?)?;
     Ok(())
 }
