@@ -1,5 +1,5 @@
 [package]
-name = "export_malloc"
+name = "find_malloc"
 version = "0.1.0"
 edition = "2021"
 
